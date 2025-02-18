@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>Minecraft Bingo Card Renderer</title>
+  <title>Minecraft Card Parser</title>
   <style>
     body {
       font-family: Arial, sans-serif;
@@ -54,19 +54,25 @@
   </style>
 </head>
 <body>
-  <h1>Minecraft Bingo Card Renderer</h1>
-  <p>Paste your list of results below (one cell per line).  
-  If a line starts with a rarity keyword (e.g. “Very Common”, “Common”, “Uncommon”, “Rare”, or “Super Rare”) followed by a tab, that rarity will be used; otherwise the line is taken as the item name.</p>
-  <textarea id="inputList" placeholder="Example:
-Very Common	EGG
-Rare	DIAMOND_ORE
-SPRUCE_BUTTON"></textarea>
+  <h1>Minecraft Card Parser</h1>
+  <p>
+    Paste your list below. Some lines might be <code>Rarity [TAB] Item</code>, others might be just <code>Item</code>, or a line might contain only a rarity and the next line is the item.
+    Blank lines are ignored.
+  </p>
+  <textarea id="inputList" placeholder="Example lines:
+ACACIA_TRAPDOOR
+Very Common    MANGROVE_PRESSURE_PLATE
+Common    WOODEN_SWORD
+Very Common
+WHEAT_SEEDS
+Rare    POPPY
+..."></textarea>
   <br>
   <button id="renderButton">Render Card</button>
   <div id="cardContainer"></div>
 
   <script>
-    /********** RARITY STYLE MAPPING **********/
+    /********** RARITY -> STYLING **********/
     const categoryMapping = {
       "Very Common": { color: "#FFD700", textColor: "#000" },
       "Common": { color: "#FFFFFF", textColor: "#000" },
@@ -74,50 +80,81 @@ SPRUCE_BUTTON"></textarea>
       "Rare": { color: "#1E90FF", textColor: "#FFF" },
       "Super Rare": { color: "#8A2BE2", textColor: "#FFF" }
     };
+    // The known rarities:
+    const knownRarities = ["Very Common", "Common", "Uncommon", "Rare", "Super Rare"];
 
     /********** IMAGE URL GENERATOR **********/
-    // This function converts an item name (in all caps with underscores)
-    // into Title Case (e.g. "DIAMOND_PICKAXE" -> "Diamond Pickaxe")
-    // then builds a generic image URL using a common pattern from the Minecraft Wiki.
-    // (Note: Not every item may follow this pattern; you may add exceptions as needed.)
+    // Converts an item name (like "DIAMOND_ORE") into Title Case ("Diamond Ore")
+    // and builds a URL that assumes the image on the Wiki is "Diamond_Ore_JE1.png"
     function getItemImage(itemName) {
-      // Convert the item name to Title Case
-      let properName = itemName.toLowerCase().split('_')
+      let properName = itemName.toLowerCase()
+        .split('_')
         .map(word => word.charAt(0).toUpperCase() + word.slice(1))
         .join(' ');
-      // Build the filename by replacing spaces with underscores.
-      // Here we assume the image filename is of the form "Proper_Name_JE2_BE2.png".
-      let fileName = properName.replace(/\s+/g, '_') + "_JE2_BE2.png";
+      let fileName = properName.replace(/\s+/g, '_') + "_JE1.png";
       let url = "https://minecraft.wiki/w/" + properName + "#/media/File:" + fileName;
       return url;
     }
 
-    /********** INPUT PARSING **********/
-    // This function parses the pasted text.
-    // Each line is split on the tab character.
-    // If two parts are found, the first is taken as the rarity and the second as the item.
-    // If only one part is found, it is taken as the item and rarity is left blank.
+    /********** PARSE INPUT **********/
+    // This handles lines that might be:
+    //  - "Rarity [tab] Item"
+    //  - "Rarity" only
+    //  - "Item" only
+    //  - blank lines (ignored)
     function parseInput(text) {
-      let lines = text.split("\n").map(line => line.trim()).filter(line => line !== "");
+      let lines = text.split(/\r?\n/).map(l => l.trim()).filter(l => l !== "");
       let cells = [];
-      lines.forEach(line => {
-        let parts = line.split("\t");
-        if (parts.length >= 2) {
-          // First part is rarity, remaining parts (joined) are the item name.
-          let rarity = parts[0].trim();
-          let item = parts.slice(1).join(" ").trim();
-          cells.push({ item: item, rarity: rarity });
+      let pendingRarity = null;
+
+      for (let line of lines) {
+        // Attempt to split on tabs
+        let parts = line.split(/\t+/).map(x => x.trim()).filter(x => x);
+        if (parts.length === 2) {
+          // Could be "Rarity Item" or "Item Rarity"
+          let left = parts[0];
+          let right = parts[1];
+          if (knownRarities.includes(left)) {
+            // e.g. "Very Common" + "MANGROVE_PRESSURE_PLATE"
+            cells.push({ item: right, rarity: left });
+            pendingRarity = null;
+          } else if (knownRarities.includes(right)) {
+            // e.g. "MANGROVE_PRESSURE_PLATE" + "Very Common"
+            cells.push({ item: left, rarity: right });
+            pendingRarity = null;
+          } else {
+            // Neither part is a known rarity -> treat entire line as item only
+            // (Or we could just do item=left, ignoring right. But let's join them.)
+            let combinedItem = left + "_" + right;
+            cells.push({ item: combinedItem, rarity: "" });
+            pendingRarity = null;
+          }
+        } else if (parts.length === 1) {
+          // Single token
+          let token = parts[0];
+          if (knownRarities.includes(token)) {
+            // It's a known rarity, but no item => store as pending
+            pendingRarity = token;
+          } else {
+            // It's presumably an item. If we have a pending rarity, use it.
+            let r = pendingRarity || "";
+            cells.push({ item: token, rarity: r });
+            pendingRarity = null;
+          }
         } else {
-          // Only one token: treat as item name; rarity will be blank.
-          cells.push({ item: line, rarity: "" });
+          // More than 2 tokens or none -> treat the line as item only
+          let joined = parts.join("_");
+          let r = pendingRarity || "";
+          cells.push({ item: joined, rarity: r });
+          pendingRarity = null;
         }
-      });
+      }
       return cells;
     }
 
-    /********** RENDERING THE GRID **********/
+    /********** RENDERING THE CARD **********/
     function renderCard(cells) {
-      // Determine grid size (n x n) that can hold all cells.
+      // Make an n x n grid, where n = ceil(sqrt(# of cells))
       let total = cells.length;
       let n = Math.ceil(Math.sqrt(total));
       let table = document.createElement("table");
@@ -127,17 +164,13 @@ SPRUCE_BUTTON"></textarea>
         for (let j = 0; j < n; j++) {
           let td = document.createElement("td");
           if (cellIndex < total) {
-            let cellData = cells[cellIndex];
-            // Get image URL for the item
-            let imgUrl = getItemImage(cellData.item);
-            // Build inner HTML: image on top, then item name and rarity
-            let rarityText = cellData.rarity ? cellData.rarity : "";
-            td.innerHTML = `<img src="${imgUrl}" alt="${cellData.item}"><br>
-                            <span>${cellData.item}<br>${rarityText}</span>`;
-            // If rarity is one of our known categories, apply background style
-            if (categoryMapping[cellData.rarity]) {
-              td.style.backgroundColor = categoryMapping[cellData.rarity].color;
-              td.style.color = categoryMapping[cellData.rarity].textColor;
+            let { item, rarity } = cells[cellIndex];
+            let imgUrl = getItemImage(item);
+            td.innerHTML = `<img src="${imgUrl}" alt="${item}"><br>
+                            <span>${item}${rarity ? "<br>" + rarity : ""}</span>`;
+            if (categoryMapping[rarity]) {
+              td.style.backgroundColor = categoryMapping[rarity].color;
+              td.style.color = categoryMapping[rarity].textColor;
             }
           }
           tr.appendChild(td);
@@ -150,7 +183,7 @@ SPRUCE_BUTTON"></textarea>
       container.appendChild(table);
     }
 
-    /********** EVENT LISTENER **********/
+    /********** MAIN EVENT LISTENER **********/
     document.getElementById("renderButton").addEventListener("click", function() {
       let inputText = document.getElementById("inputList").value;
       let cells = parseInput(inputText);
